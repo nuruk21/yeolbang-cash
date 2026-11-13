@@ -744,7 +744,7 @@ async function imageToBase64(file) {
   const url = URL.createObjectURL(file);
   try {
     const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url });
-    const sc = Math.min(1, 2000 / Math.max(img.width, img.height));
+    const sc = Math.min(1, 1600 / Math.max(img.width, img.height));
     const c = document.createElement('canvas'); c.width = Math.round(img.width * sc); c.height = Math.round(img.height * sc);
     const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
     return c.toDataURL('image/jpeg', 0.92).split(',')[1];
@@ -756,7 +756,7 @@ async function processImage(file) {
   if (!file || !/^image\//.test(file.type)) { toast('이미지 파일만 올릴 수 있습니다'); return }
   if (file.size > 15 * 1024 * 1024) { toast('사진이 너무 큽니다 (15MB 이하)'); return }
   aiBusy = true;
-  showModal(`<h3>마감 화면을 읽는 중…</h3><p class="lbl">10~20초쯤 걸립니다. 창을 닫지 마세요.</p>`);
+  showModal(`<h3>마감 화면을 읽는 중…</h3><p class="lbl">보통 10~30초 걸립니다. 서버가 바쁘면 다른 AI 모델로 자동으로 다시 시도하니 1분 정도 기다려 주세요.</p>`);
   try {
     const b64 = await imageToBase64(file);
     const { data } = await fb.readClosingImage(b64, 'image/jpeg');

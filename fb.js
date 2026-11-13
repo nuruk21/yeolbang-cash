@@ -109,8 +109,16 @@ export async function readClosingImage(base64, mimeType) {
   const tried = [];
   for (const name of GEMINI_MODELS) {
     try {
-      const model = getGenerativeModel(ai, { model: name, generationConfig: { responseMimeType: "application/json" } });
-      const r = await model.generateContent([PROMPT, { inlineData: { data: base64, mimeType } }]);
+      const model = getGenerativeModel(ai, { model: name, generationConfig: { responseMimeType: "application/json" } }, { timeout: 90000 });
+      let r;
+      for (let attempt = 0; ; attempt++) {
+        try { r = await model.generateContent([PROMPT, { inlineData: { data: base64, mimeType } }]); break; }
+        catch (e2) {
+          // 서버 혼잡(503/500/시간 초과)이면 같은 모델로 한 번 더, 그래도 안 되면 다음 모델로
+          if (attempt === 0 && /\b50[034]\b|UNAVAILABLE|Deadline|overloaded|timed? ?out/i.test(String(e2 && e2.message))) { await new Promise(res => setTimeout(res, 1500)); continue; }
+          throw e2;
+        }
+      }
       const txt = r.response.text().replace(/^```(?:json)?\s*|\s*```$/g, "");
       return { data: JSON.parse(txt), model: name };
     } catch (e) {
@@ -118,7 +126,7 @@ export async function readClosingImage(base64, mimeType) {
       const msg = String(e && (e.message || e));
       tried.push(name + ": " + msg.slice(0, 160));
       // 모델이 없거나(404) 이 모델의 무료 한도가 없거나 찼으면(429) 다음 모델로
-      if (/\b404\b|not found|NOT_FOUND|is not supported|no longer available|\b429\b|RESOURCE_EXHAUSTED|quota/i.test(msg)) continue;
+      if (/\b404\b|not found|NOT_FOUND|is not supported|no longer available|\b429\b|RESOURCE_EXHAUSTED|quota|\b50[034]\b|UNAVAILABLE|Deadline|overloaded|timed? ?out/i.test(msg)) continue;
       throw e;
     }
   }
