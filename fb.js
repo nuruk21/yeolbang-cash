@@ -107,26 +107,32 @@ export async function readClosingImage(base64, mimeType) {
   if (!ai) throw Object.assign(new Error("AI 미설정"), { code: "not-configured" });
   let lastErr = null;
   const tried = [];
-  for (const name of GEMINI_MODELS) {
+  // 지난번에 성공한 모델을 먼저 시도 (모델 이름만 기억, 장부 데이터는 저장하지 않음)
+  let order = GEMINI_MODELS.slice();
+  try { const good = localStorage.getItem("yb-ai-model"); if (good && order.includes(good)) order = [good, ...order.filter(m => m !== good)]; } catch (_) {}
+  for (const name of order) {
     try {
-      const model = getGenerativeModel(ai, { model: name, generationConfig: { responseMimeType: "application/json" } }, { timeout: 90000 });
+      const model = getGenerativeModel(ai, { model: name, generationConfig: { responseMimeType: "application/json" } }, { timeout: 40000 });
       let r;
       for (let attempt = 0; ; attempt++) {
         try { r = await model.generateContent([PROMPT, { inlineData: { data: base64, mimeType } }]); break; }
         catch (e2) {
           // 서버 혼잡(503/500/시간 초과)이면 같은 모델로 한 번 더, 그래도 안 되면 다음 모델로
-          if (attempt === 0 && /\b50[034]\b|UNAVAILABLE|Deadline|overloaded|timed? ?out/i.test(String(e2 && e2.message))) { await new Promise(res => setTimeout(res, 1500)); continue; }
+          // 혼잡(503)이 빨리 돌아온 경우만 같은 모델로 한 번 더. 시간 초과는 바로 다음 모델로
+          if (attempt === 0 && /\b503\b|overloaded/i.test(String(e2 && e2.message)) && !/Deadline|timed? ?out|abort/i.test(String(e2 && e2.message))) { await new Promise(res => setTimeout(res, 1500)); continue; }
           throw e2;
         }
       }
       const txt = r.response.text().replace(/^```(?:json)?\s*|\s*```$/g, "");
-      return { data: JSON.parse(txt), model: name };
+      const data = JSON.parse(txt);
+      try { localStorage.setItem("yb-ai-model", name); } catch (_) {}
+      return { data, model: name };
     } catch (e) {
       lastErr = e;
       const msg = String(e && (e.message || e));
       tried.push(name + ": " + msg.slice(0, 160));
       // 모델이 없거나(404) 이 모델의 무료 한도가 없거나 찼으면(429) 다음 모델로
-      if (/\b404\b|not found|NOT_FOUND|is not supported|no longer available|\b429\b|RESOURCE_EXHAUSTED|quota|\b50[034]\b|UNAVAILABLE|Deadline|overloaded|timed? ?out/i.test(msg)) continue;
+      if (/\b404\b|not found|NOT_FOUND|is not supported|no longer available|\b429\b|RESOURCE_EXHAUSTED|quota|\b50[034]\b|UNAVAILABLE|Deadline|overloaded|timed? ?out|abort/i.test(msg)) continue;
       throw e;
     }
   }

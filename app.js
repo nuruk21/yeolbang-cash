@@ -759,8 +759,10 @@ async function processImage(file) {
   showModal(`<h3>마감 화면을 읽는 중…</h3><p class="lbl">보통 10~30초 걸립니다. 서버가 바쁘면 다른 AI 모델로 자동으로 다시 시도하니 1분 정도 기다려 주세요.</p>`);
   try {
     const b64 = await imageToBase64(file);
-    const { data } = await fb.readClosingImage(b64, 'image/jpeg');
-    showAiResult(interpret(data || {}));
+    const t0 = Date.now();
+    const { data, model } = await fb.readClosingImage(b64, 'image/jpeg');
+    const res = interpret(data || {}); res.model = model; res.secs = Math.round((Date.now() - t0) / 1000);
+    showAiResult(res);
   } catch (e) {
     console.error(e);
     const m = String(e && (e.code || '') + ' ' + (e.message || ''));
@@ -790,7 +792,7 @@ function showAiResult(res) {
     </table>
     <div class="lbl" style="font-size:12.5px">${res.rx.how ? `조제 현금 = ${esc(res.rx.how)}<br>` : ''}${res.otc.how ? `일반약 현금 = ${esc(res.otc.how)}` : ''}</div>
     ${res.warns.length ? `<div class="bn" style="margin-top:10px">${res.warns.map(w => '⚠️ ' + esc(w)).join('<br>')}</div>` : `<div class="bn" style="margin-top:10px;background:var(--green-soft);color:var(--green-ink)">✓ 총계와 카드·현금 합계가 맞습니다.</div>`}
-    <p class="lbl" style="margin-top:10px">AI가 읽은 값이니 화면과 한 번 대조한 뒤 적용하세요.${hasOld ? ' 이미 입력된 조제·일반약 현금/카드 금액은 덮어씁니다.' : ''}</p>
+    <p class="lbl" style="margin-top:10px;font-size:12px;color:var(--faint)">${esc(res.model || '')} · ${res.secs || 0}초</p><p class="lbl" style="margin-top:4px">AI가 읽은 값이니 화면과 한 번 대조한 뒤 적용하세요.${hasOld ? ' 이미 입력된 조제·일반약 현금/카드 금액은 덮어씁니다.' : ''}</p>
     <div class="acts">${diffDate ? `<button class="btn left" data-m="apply-cur">${shortDate(S.date)}에 입력</button>` : ''}<button class="btn" data-m="close">취소</button><button class="btn pri" data-m="apply">${shortDate(target)}에 입력</button></div>`,
     (k, m) => {
       if (k !== 'apply' && k !== 'apply-cur') return;
