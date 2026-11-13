@@ -259,6 +259,7 @@ function renderToday() {
 
     <section class="card">
       <h2><span class="step">2</span>오늘 매출</h2>
+      ${!lock && fb.aiReady() ? `<div class="photobar"><button class="btn pri" data-act="photo">📷 마감 화면 사진으로 자동 입력</button><span class="lbl">사진을 고르거나, 마감 화면을 캡처한 뒤 이 페이지에서 <b>Ctrl+V</b></span><input type="file" id="photoFile" accept="image/*" hidden></div>` : ''}
       <p class="hint">약국 프로그램·카드단말기의 일 마감 금액을 옮겨 적으세요. <b>12000+3500</b>처럼 더하기로 입력해도 됩니다. 외상으로 처리한 금액과 외상·요양원 수금액은 여기에 넣지 말고 ③에 기록하세요.</p>
       <div class="salewrap"><table class="sales">
         <thead><tr><th></th><th>현금</th><th>카드</th><th>계좌이체</th><th>합계</th></tr></thead>
@@ -627,6 +628,7 @@ view.addEventListener('change', e => {
   if (t.classList.contains('amt')) { const n = parseAmt(t.value); t.value = n == null ? '' : fmt(n); if (t.dataset.f === 'opening' && n == null) render() }
   if (t.dataset.act === 'day-pick' && t.value) { flushAll(); S.date = t.value; render() }
   if (t.dataset.act === 'am-all') { S.accAll = t.checked; render() }
+  if (t.id === 'photoFile' && t.files[0]) { processImage(t.files[0]); t.value = ''; return }
   if (t.id === 'restoreFile' && t.files[0]) {
     const file = t.files[0];
     file.text().then(txt => {
@@ -651,6 +653,7 @@ document.addEventListener('click', e => {
   const a = b.dataset.act;
   if (b.tagName === 'A') e.preventDefault();
   switch (a) {
+    case 'photo': { const f = document.getElementById('photoFile'); if (f) f.click(); break }
     case 'login': doLogin(); break;
     case 'logout': doLogout(); break;
     case 'day-prev': flushAll(); S.date = addDays(S.date, -1); render(); break;
@@ -703,6 +706,108 @@ document.addEventListener('click', e => {
       saveFile(`열방약국_현금정산_백업_${todayStr()}.json`, JSON.stringify(j, null, 1), 'application/json'); break
     }
   }
+});
+
+/* ---------- 마감 화면 사진 → 자동 입력 ---------- */
+function num(v) { if (v == null || v === '') return null; const n = Number(String(v).replace(/[^\d\-]/g, '')); return isNaN(n) || String(v).replace(/[^\d]/g, '') === '' ? null : n }
+function interpret(r) {
+  const warns = [];
+  const part = (label, total, card, cash, receipt, credit) => {
+    let cashAmt = null, how = '';
+    if (cash != null) {
+      if (total != null && card != null && receipt && card + cash + credit === total) { cashAmt = cash; how = `현금결제 ${fmt(cash)} (현금영수증 금액은 현금결제에 이미 포함)` }
+      else { cashAmt = cash + (receipt || 0); how = receipt ? `현금결제 ${fmt(cash)} + 현금영수증 ${fmt(receipt)}` : `현금결제 ${fmt(cash)}` }
+    } else if (total != null && card != null) {
+      cashAmt = total - card - credit;
+      how = `총계 ${fmt(total)} − 카드 ${fmt(card)}${credit ? ` − 외상 ${fmt(credit)}` : ''} (계산값)`;
+      warns.push(`${label} 현금은 '현금결제' 줄이 화면에 보이지 않아 총계에서 계산한 값입니다. 표를 아래로 내려 확인하세요.`);
+    } else warns.push(`${label} 현금 금액을 읽지 못했습니다. 직접 입력하세요.`);
+    if (card == null) warns.push(`${label} 카드 금액을 읽지 못했습니다. 직접 입력하세요.`);
+    if (total != null && card != null && cashAmt != null) {
+      const diff = total - card - cashAmt - credit;
+      if (diff !== 0) warns.push(`${label}: 총계 ${fmt(total)}원과 카드+현금 합계가 ${sgn(diff)} 차이 납니다. 계좌이체·외상 등이 있는지 확인하세요.`);
+    }
+    return { cash: cashAmt, card, how, total };
+  };
+  const rx = part('조제', num(r.rx_total), num(r.rx_card), num(r.rx_cash), num(r.rx_cash_receipt), 0);
+  const otcCredit = num(r.otc_credit) || 0;
+  const otc = part('일반약', num(r.otc_total), num(r.otc_card), num(r.otc_cash), num(r.otc_cash_receipt), otcCredit);
+  if (otcCredit > 0) warns.push(`일반약 외상 ${won(otcCredit)}이 있습니다. ③ 외상·요양원에 거래처별로 기록하세요.`);
+  const cc = num(r.customer_credit); if (cc) warns.push(`고객 외상장 ${won(cc)}이 있습니다. ③ 외상·요양원 기록과 맞는지 확인하세요.`);
+  const okDate = s => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
+  let date = null;
+  if (okDate(r.dateFrom) && okDate(r.dateTo)) { if (r.dateFrom === r.dateTo) date = r.dateTo; else warns.push(`조회기간이 ${r.dateFrom} ~ ${r.dateTo}로 하루가 아닙니다. 하루치 화면인지 확인하세요.`) }
+  else if (okDate(r.dateTo)) date = r.dateTo;
+  return { rx, otc, date, warns };
+}
+async function imageToBase64(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url });
+    const sc = Math.min(1, 2000 / Math.max(img.width, img.height));
+    const c = document.createElement('canvas'); c.width = Math.round(img.width * sc); c.height = Math.round(img.height * sc);
+    const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
+    return c.toDataURL('image/jpeg', 0.92).split(',')[1];
+  } finally { URL.revokeObjectURL(url) }
+}
+let aiBusy = false;
+async function processImage(file) {
+  if (aiBusy) return;
+  if (!file || !/^image\//.test(file.type)) { toast('이미지 파일만 올릴 수 있습니다'); return }
+  if (file.size > 15 * 1024 * 1024) { toast('사진이 너무 큽니다 (15MB 이하)'); return }
+  aiBusy = true;
+  showModal(`<h3>마감 화면을 읽는 중…</h3><p class="lbl">10~20초쯤 걸립니다. 창을 닫지 마세요.</p>`);
+  try {
+    const b64 = await imageToBase64(file);
+    const { data } = await fb.readClosingImage(b64, 'image/jpeg');
+    showAiResult(interpret(data || {}));
+  } catch (e) {
+    console.error(e);
+    const m = String(e && (e.code || '') + ' ' + (e.message || ''));
+    let msg = '사진을 읽지 못했습니다. 잠시 후 다시 시도하거나 직접 입력하세요.';
+    if (/not-configured/.test(m)) msg = 'AI 사진 인식 설정(App Check 키)이 아직 되어 있지 않습니다.';
+    else if (/app.?check|appCheck|401|403|PERMISSION|unauthenticated/i.test(m)) msg = 'AI 보안 확인(App Check)에 실패했습니다. Firebase 설정을 확인하거나 페이지를 새로고침한 뒤 다시 시도하세요.';
+    else if (/429|quota|RESOURCE_EXHAUSTED|rate/i.test(m)) msg = '오늘 AI 사용량 한도에 도달했습니다. 잠시 후 다시 시도하거나 직접 입력하세요.';
+    else if (/JSON|Unexpected token/i.test(m)) msg = '화면 내용을 알아보지 못했습니다. 통계 화면 전체가 선명하게 나오도록 다시 찍어 주세요.';
+    showModal(`<h3>읽기 실패</h3><p class="lbl">${esc(msg)}</p><div class="acts"><button class="btn pri" data-m="close">닫기</button></div>`);
+  } finally { aiBusy = false }
+}
+function showAiResult(res) {
+  const target = res.date || S.date;
+  const diffDate = res.date && res.date !== S.date;
+  const cur = S.days[target] && S.days[target].sales || {};
+  const hasOld = ['rxCash', 'rxCard', 'otcCash', 'otcCard'].some(k => cur[k] != null);
+  const inp = (id, v) => `<input class="amt txt" id="${id}" value="${fmt(v)}" inputmode="tel" style="text-align:right">`;
+  showModal(`<h3>마감 화면에서 읽은 금액</h3>
+    <p class="lbl" style="margin:-4px 0 10px">화면 날짜: <b>${res.date ? korDate(res.date) : '읽지 못함'}</b>${diffDate ? ` <span class="badge warn">지금 보는 날짜(${shortDate(S.date)})와 다름</span>` : ''}</p>
+    <table class="stmt" style="margin-bottom:8px">
+      <thead><tr><th></th><th class="n">현금</th><th class="n">카드</th></tr></thead>
+      <tbody>
+        <tr><td style="white-space:nowrap">조제 본인부담</td><td>${inp('ai-rxCash', res.rx.cash)}</td><td>${inp('ai-rxCard', res.rx.card)}</td></tr>
+        <tr><td style="white-space:nowrap">일반약·건기식</td><td>${inp('ai-otcCash', res.otc.cash)}</td><td>${inp('ai-otcCard', res.otc.card)}</td></tr>
+      </tbody>
+    </table>
+    <div class="lbl" style="font-size:12.5px">${res.rx.how ? `조제 현금 = ${esc(res.rx.how)}<br>` : ''}${res.otc.how ? `일반약 현금 = ${esc(res.otc.how)}` : ''}</div>
+    ${res.warns.length ? `<div class="bn" style="margin-top:10px">${res.warns.map(w => '⚠️ ' + esc(w)).join('<br>')}</div>` : `<div class="bn" style="margin-top:10px;background:var(--green-soft);color:var(--green-ink)">✓ 총계와 카드·현금 합계가 맞습니다.</div>`}
+    <p class="lbl" style="margin-top:10px">AI가 읽은 값이니 화면과 한 번 대조한 뒤 적용하세요.${hasOld ? ' 이미 입력된 조제·일반약 현금/카드 금액은 덮어씁니다.' : ''}</p>
+    <div class="acts">${diffDate ? `<button class="btn left" data-m="apply-cur">${shortDate(S.date)}에 입력</button>` : ''}<button class="btn" data-m="close">취소</button><button class="btn pri" data-m="apply">${shortDate(target)}에 입력</button></div>`,
+    (k, m) => {
+      if (k !== 'apply' && k !== 'apply-cur') return;
+      const d = k === 'apply' ? target : S.date;
+      if (S.days[d] && S.days[d].closed) { toast(`${shortDate(d)}은 마감된 날입니다. 마감 해제 후 입력하세요`); return }
+      const g = id => parseAmt(m.querySelector('#' + id).value);
+      const vals = { rxCash: g('ai-rxCash'), rxCard: g('ai-rxCard'), otcCash: g('ai-otcCash'), otcCard: g('ai-otcCard') };
+      closeModal(); flushAll();
+      S.date = d; if (location.hash !== '#today') location.hash = '#today';
+      editDay(day => { day.sales = day.sales || {}; Object.assign(day.sales, vals) }, { now: true, full: true });
+      toast(`${shortDate(d)} 매출을 입력했습니다`);
+    });
+}
+document.addEventListener('paste', e => {
+  if (S.phase !== 'app' || S.view !== 'today' || !fb.aiReady()) return;
+  const it = [...((e.clipboardData && e.clipboardData.items) || [])].find(i => i.type && i.type.startsWith('image/'));
+  if (!it) return;
+  e.preventDefault(); processImage(it.getAsFile());
 });
 
 boot();

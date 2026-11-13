@@ -14,3 +14,10 @@ export const OWNER_EMAIL = "nuruk21@gmail.com";
 
 // 3) 이 시간(분) 동안 아무 조작이 없으면 자동 로그아웃
 export const IDLE_LOGOUT_MINUTES = 30;
+
+// 4) 마감 화면 사진 인식(AI) 설정
+//    App Check용 reCAPTCHA 사이트 키를 넣어야 사진 인식 기능이 켜집니다. (비어 있으면 기능이 숨겨짐)
+export const APP_CHECK_SITE_KEY = "";
+export const APP_CHECK_PROVIDER = "v3";   // reCAPTCHA v3 키면 "v3", reCAPTCHA Enterprise 키면 "enterprise"
+//    앞에서부터 차례로 시도합니다. 모델이 단종되면 다음 모델을 자동으로 씁니다.
+export const GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3-flash-preview"];
