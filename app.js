@@ -767,9 +767,10 @@ async function processImage(file) {
     let msg = '사진을 읽지 못했습니다. 잠시 후 다시 시도하거나 직접 입력하세요.';
     if (/not-configured/.test(m)) msg = 'AI 사진 인식 설정(App Check 키)이 아직 되어 있지 않습니다.';
     else if (/app.?check|appCheck|401|403|PERMISSION|unauthenticated/i.test(m)) msg = 'AI 보안 확인(App Check)에 실패했습니다. Firebase 설정을 확인하거나 페이지를 새로고침한 뒤 다시 시도하세요.';
-    else if (/429|quota|RESOURCE_EXHAUSTED|rate/i.test(m)) msg = '오늘 AI 사용량 한도에 도달했습니다. 잠시 후 다시 시도하거나 직접 입력하세요.';
+    else if (/\b429\b|quota|RESOURCE_EXHAUSTED/i.test(m)) msg = 'AI 사용 한도에 걸렸습니다. 1~2분 뒤 다시 시도하세요. 계속되면 아래 오류 내용을 캡처해서 보내 주세요.';
     else if (/JSON|Unexpected token/i.test(m)) msg = '화면 내용을 알아보지 못했습니다. 통계 화면 전체가 선명하게 나오도록 다시 찍어 주세요.';
-    showModal(`<h3>읽기 실패</h3><p class="lbl">${esc(msg)}</p><div class="acts"><button class="btn pri" data-m="close">닫기</button></div>`);
+    const detail = (e && e.tried && e.tried.length ? e.tried.join('\n') : m).slice(0, 900);
+    showModal(`<h3>읽기 실패</h3><p class="lbl">${esc(msg)}</p><details style="margin-top:8px"><summary class="lbl" style="cursor:pointer">오류 자세히 보기</summary><pre style="white-space:pre-wrap;font-size:11.5px;background:#f4f1ea;padding:8px;border-radius:8px;max-height:220px;overflow:auto">${esc(detail)}</pre></details><div class="acts"><button class="btn pri" data-m="close">닫기</button></div>`);
   } finally { aiBusy = false }
 }
 function showAiResult(res) {

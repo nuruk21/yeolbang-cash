@@ -106,6 +106,7 @@ const PROMPT = `이 이미지는 한국 약국 관리 프로그램(예: PMIT3000
 export async function readClosingImage(base64, mimeType) {
   if (!ai) throw Object.assign(new Error("AI 미설정"), { code: "not-configured" });
   let lastErr = null;
+  const tried = [];
   for (const name of GEMINI_MODELS) {
     try {
       const model = getGenerativeModel(ai, { model: name, generationConfig: { responseMimeType: "application/json" } });
@@ -114,10 +115,14 @@ export async function readClosingImage(base64, mimeType) {
       return { data: JSON.parse(txt), model: name };
     } catch (e) {
       lastErr = e;
-      const msg = String(e && (e.message || e)) ;
-      if (/404|not found|NOT_FOUND|is not supported|no longer available/i.test(msg)) continue; // 다음 모델로
+      const msg = String(e && (e.message || e));
+      tried.push(name + ": " + msg.slice(0, 160));
+      // 모델이 없거나(404) 이 모델의 무료 한도가 없거나 찼으면(429) 다음 모델로
+      if (/\b404\b|not found|NOT_FOUND|is not supported|no longer available|\b429\b|RESOURCE_EXHAUSTED|quota/i.test(msg)) continue;
       throw e;
     }
   }
-  throw lastErr || new Error("사용 가능한 모델이 없습니다");
+  const err = lastErr || new Error("사용 가능한 모델이 없습니다");
+  try { err.tried = tried; } catch (_) {}
+  throw err;
 }
