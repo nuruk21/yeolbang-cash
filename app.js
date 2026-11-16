@@ -715,16 +715,16 @@ function interpret(r) {
   const part = (label, total, card, cash, receipt, credit) => {
     let cashAmt = null, how = '';
     if (cash != null) {
-      if (total != null && card != null && receipt && card + cash + credit === total) { cashAmt = cash; how = `현금결제 ${fmt(cash)} (현금영수증 금액은 현금결제에 이미 포함)` }
+      if (total != null && card != null && receipt && card + cash === total) { cashAmt = cash; how = `현금결제 ${fmt(cash)} (현금영수증 금액은 현금결제에 이미 포함)` }
       else { cashAmt = cash + (receipt || 0); how = receipt ? `현금결제 ${fmt(cash)} + 현금영수증 ${fmt(receipt)}` : `현금결제 ${fmt(cash)}` }
     } else if (total != null && card != null) {
-      cashAmt = total - card - credit;
-      how = `총계 ${fmt(total)} − 카드 ${fmt(card)}${credit ? ` − 외상 ${fmt(credit)}` : ''} (계산값)`;
+      cashAmt = total - card; // 입금액 총계에는 외상이 이미 빠져 있음
+      how = `입금액 총계 ${fmt(total)} − 카드 ${fmt(card)} (계산값)`;
       warns.push(`${label} 현금은 '현금결제' 줄이 화면에 보이지 않아 총계에서 계산한 값입니다. 표를 아래로 내려 확인하세요.`);
     } else warns.push(`${label} 현금 금액을 읽지 못했습니다. 직접 입력하세요.`);
     if (card == null) warns.push(`${label} 카드 금액을 읽지 못했습니다. 직접 입력하세요.`);
     if (total != null && card != null && cashAmt != null) {
-      const diff = total - card - cashAmt - credit;
+      const diff = total - card - cashAmt;
       if (diff !== 0) warns.push(`${label}: 총계 ${fmt(total)}원과 카드+현금 합계가 ${sgn(diff)} 차이 납니다. 계좌이체·외상 등이 있는지 확인하세요.`);
     }
     return { cash: cashAmt, card, how, total };
@@ -732,7 +732,7 @@ function interpret(r) {
   const rx = part('조제', num(r.rx_total), num(r.rx_card), num(r.rx_cash), num(r.rx_cash_receipt), 0);
   const otcCredit = num(r.otc_credit) || 0;
   const otc = part('일반약', num(r.otc_total), num(r.otc_card), num(r.otc_cash), num(r.otc_cash_receipt), otcCredit);
-  if (otcCredit > 0) warns.push(`일반약 외상 ${won(otcCredit)}이 있습니다. ③ 외상·요양원에 거래처별로 기록하세요.`);
+  if (otcCredit > 0) warns.push(`일반약 외상 ${won(otcCredit)}이 있습니다. 이 금액은 현금·카드에 넣지 않았으니 ③ 외상·요양원에 거래처별로 '외상 발생'으로 기록하세요.`);
   const cc = num(r.customer_credit); if (cc) warns.push(`고객 외상장 ${won(cc)}이 있습니다. ③ 외상·요양원 기록과 맞는지 확인하세요.`);
   const okDate = s => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
   let date = null;
