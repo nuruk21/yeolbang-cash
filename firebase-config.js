@@ -21,3 +21,8 @@ export const APP_CHECK_SITE_KEY = "6LcpYR0uAAAAAPLzC-SlD5y-5lEpsmx6oYYOnx__";
 export const APP_CHECK_PROVIDER = "enterprise";   // Fraud Defense(reCAPTCHA Enterprise) 키
 //    앞에서부터 차례로 시도합니다. 모델이 단종되면 다음 모델을 자동으로 씁니다.
 export const GEMINI_MODELS = ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3-flash-preview"];
+
+// 5) 외상 판매가 약국 프로그램(PMIT3000)에서 '현금결제'로 집계되면 true
+//    true: ③에 기록한 '외상 발생' 금액을 금고 계산(있어야 할 현금)에서 뺍니다.
+//    PMIT3000에서 외상을 '외상'으로 따로 처리하기 시작하면 false로 바꾸세요.
+export const CREDIT_INCLUDED_IN_CASH = true;

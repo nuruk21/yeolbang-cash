@@ -1,6 +1,9 @@
 // 열방약국 현금정산 — 앱 본체
 import * as fb from "./fb.js";
 import { OWNER_EMAIL, IDLE_LOGOUT_MINUTES } from "./firebase-config.js";
+import * as CFG from "./firebase-config.js";
+// 약국 프로그램(PMIT3000)에서 외상 판매가 '현금결제'로 집계되는 경우 true → 외상 발생액을 금고 계산에서 뺌
+const CREDIT_IN_CASH = CFG.CREDIT_INCLUDED_IN_CASH !== false;
 
 /* ---------- 상수 ---------- */
 const DENOMS = [50000, 10000, 5000, 1000, 500, 100, 50, 10];
@@ -71,11 +74,12 @@ function calc(date) {
   const credCash = pay('cash'), credCard = pay('card'), credTr = pay('transfer');
   const mv = day.moves || [];
   const movesIn = sum(mv.filter(m => m.dir === 'in'), m => m.amount), movesOut = sum(mv.filter(m => m.dir === 'out'), m => m.amount);
-  const expected = opening + cashSales + credCash + movesIn - movesOut;
+  const creditOut = CREDIT_IN_CASH ? credCharge : 0; // 현금 매출에 섞여 있는 외상 (실제로 안 들어온 돈)
+  const expected = opening + cashSales - creditOut + credCash + movesIn - movesOut;
   const actual = countTotal(day);
   const diff = actual == null ? null : actual - expected;
   const cardAll = cardSales + credCard;
-  return { day, prev, opening, openingAuto, cashSales, cardSales, trSales, credCharge, credCash, credCard, credTr, movesIn, movesOut, expected, actual, diff, cardAll, totalSales: cashSales + cardSales + trSales + credCharge, led };
+  return { creditOut, day, prev, opening, openingAuto, cashSales, cardSales, trSales, credCharge, credCash, credCard, credTr, movesIn, movesOut, expected, actual, diff, cardAll, totalSales: cashSales + cardSales + trSales + (CREDIT_IN_CASH ? 0 : credCharge), led };
 }
 function accBalance(id, upto) { return sum(ledgerList().filter(e => e.accountId === id && (!upto || e.date < upto)), e => e.type === 'charge' ? e.amount : -e.amount) }
 function totalReceivable() { return sum(Object.keys(S.accounts), id => accBalance(id)) }
@@ -260,7 +264,7 @@ function renderToday() {
     <section class="card">
       <h2><span class="step">2</span>오늘 매출</h2>
       ${!lock && fb.aiReady() ? `<div class="photobar"><button class="btn pri" data-act="photo">📷 마감 화면 사진으로 자동 입력</button><span class="lbl">사진을 고르거나, 마감 화면을 캡처한 뒤 이 페이지에서 <b>Ctrl+V</b></span><input type="file" id="photoFile" accept="image/*" hidden></div>` : ''}
-      <p class="hint">약국 프로그램·카드단말기의 일 마감 금액을 옮겨 적으세요. <b>12000+3500</b>처럼 더하기로 입력해도 됩니다. 외상으로 처리한 금액과 외상·요양원 수금액은 여기에 넣지 말고 ③에 기록하세요.</p>
+      <p class="hint">약국 프로그램·카드단말기의 일 마감 금액을 옮겨 적으세요. <b>12000+3500</b>처럼 더하기로 입력해도 됩니다. ${CREDIT_IN_CASH ? 'PMIT 통계의 현금·카드 금액을 그대로 넣으세요. 외상 판매가 현금에 섞여 있어도 ③에 <b>외상 발생</b>으로 기록하면 금고 계산에서 자동으로 빠집니다. 외상·요양원에서 나중에 받은 돈은 여기 넣지 말고 ③에 <b>수금</b>으로 기록하세요.' : '외상으로 처리한 금액과 외상·요양원 수금액은 여기에 넣지 말고 ③에 기록하세요.'}</p>
       <div class="salewrap"><table class="sales">
         <thead><tr><th></th><th>현금</th><th>카드</th><th>계좌이체</th><th>합계</th></tr></thead>
         <tbody>
@@ -278,7 +282,7 @@ function renderToday() {
 
     <section class="card">
       <h2><span class="step">3</span>외상 · 요양원 (오늘 발생/수금)</h2>
-      <p class="hint">물건을 먼저 가져간 경우 <b>외상 발생</b>, 나중에 돈을 받으면 <b>수금</b>(현금·카드·계좌이체)으로 기록하세요. 현금 수금만 금고 금액에 더해집니다.</p>
+      <p class="hint">물건을 먼저 가져간 경우 <b>외상 발생</b>, 나중에 돈을 받으면 <b>수금</b>(현금·카드·계좌이체)으로 기록하세요. ${CREDIT_IN_CASH ? '외상 발생 금액은 금고 계산에서 빠지고, 현금 수금만 더해집니다. 외상을 받을 때는 PMIT에서 다시 판매로 찍지 마세요(두 번 계산됨).' : '현금 수금만 금고 금액에 더해집니다.'}</p>
       <div class="list">
         ${c.led.length ? c.led.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0)).map(e => {
           const a = S.accounts[e.accountId];
@@ -356,6 +360,7 @@ function summaryHTML(c) {
     <div class="hd">금고 대조</div>
     <div class="ln"><span>아침 시재</span><span class="num">${won(c.opening)}</span></div>
     <div class="ln"><span>＋ 현금 매출</span><span class="num">${won(c.cashSales)}</span></div>
+    ${c.creditOut ? `<div class="ln minus"><span>－ 외상 발생 (현금 매출에 포함됨)</span><span class="num">-${won(c.creditOut)}</span></div>` : ''}
     <div class="ln"><span>＋ 외상 현금 수금</span><span class="num">${won(c.credCash)}</span></div>
     <div class="ln"><span>＋ 기타 현금 입금</span><span class="num">${won(c.movesIn)}</span></div>
     <div class="ln minus"><span>－ 현금 출금·지출</span><span class="num">${c.movesOut ? '-' + won(c.movesOut) : won(0)}</span></div>
@@ -507,7 +512,7 @@ function renderHistory() {
     <button class="btn sm" data-act="m-csv">엑셀(CSV) 저장</button>
   </div>
   <div class="kpis">
-    <div class="kpi"><div class="k">월 총매출 (외상 포함)</div><div class="v num">${won(T('totalSales'))}</div></div>
+    <div class="kpi"><div class="k">월 총매출</div><div class="v num">${won(T('totalSales'))}</div></div>
     <div class="kpi"><div class="k">현금 매출</div><div class="v num">${won(T('cashSales'))}</div></div>
     <div class="kpi"><div class="k">카드 매출</div><div class="v num">${won(T('cardSales'))}</div></div>
     <div class="kpi"><div class="k">외상 발생 / 수금</div><div class="v num" style="font-size:16px">${won(T('credCharge'))} / ${won(T('credCash') + T('credCard') + T('credTr'))}</div></div>
