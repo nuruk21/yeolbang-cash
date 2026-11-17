@@ -30,3 +30,7 @@ export const CREDIT_INCLUDED_IN_CASH = true;
 // 6) 계좌이체로 받은 돈이 PMIT3000에서 '현금결제'로 집계되면 true
 //    true: 일일 정산 ④에 적은 계좌이체 금액을 금고 계산(있어야 할 현금)에서 뺍니다.
 export const TRANSFER_INCLUDED_IN_CASH = true;
+
+// 7) 조제 현금 결제 시 10원 단위 절사: 한 건당 최대 절사 금액 (100원 미만을 버리면 90원)
+//    부족액이 (조제 현금 건수 × 이 금액) 이하이면 '일치(절사 범위)'로 판정합니다.
+export const RX_CASH_TRUNC_MAX_PER = 90;

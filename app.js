@@ -7,6 +7,8 @@ const CREDIT_IN_CASH = CFG.CREDIT_INCLUDED_IN_CASH !== false;
 // 계좌이체로 받은 돈도 PMIT3000에서 '현금결제'로 집계되는 경우 true → 이체 금액을 금고 계산에서 뺌
 const TRANSFER_IN_CASH = CFG.TRANSFER_INCLUDED_IN_CASH !== false;
 const TR_CATS = ['조제', '일반약'];
+// 조제 현금 결제 시 10원 단위 절사: 한 건당 최대 절사 금액 (예: 4,370원 → 4,300원 받으면 70원)
+const RX_TRUNC_PER = Number(CFG.RX_CASH_TRUNC_MAX_PER ?? 90);
 
 /* ---------- 상수 ---------- */
 const DENOMS = [50000, 10000, 5000, 1000, 500, 100, 50, 10];
@@ -86,8 +88,11 @@ function calc(date) {
   const expected = opening + cashSales - creditOut - trOut + credCash + movesIn - movesOut;
   const actual = countTotal(day);
   const diff = actual == null ? null : actual - expected;
+  const rxCnt = Number(s.rxCashCount) || 0;
+  const truncMax = rxCnt * RX_TRUNC_PER;
+  const inTrunc = diff != null && diff < 0 && -diff <= truncMax; // 부족액이 절사 범위 안
   const cardAll = cardSales + credCard;
-  return { creditOut, trOut, rxTr, otcTr, trList, day, prev, opening, openingAuto, cashSales, cardSales, trSales, credCharge, credCash, credCard, credTr, movesIn, movesOut, expected, actual, diff, cardAll, totalSales: cashSales + cardSales + (TRANSFER_IN_CASH ? 0 : trSales) + (CREDIT_IN_CASH ? 0 : credCharge), led };
+  return { rxCnt, truncMax, inTrunc, creditOut, trOut, rxTr, otcTr, trList, day, prev, opening, openingAuto, cashSales, cardSales, trSales, credCharge, credCash, credCard, credTr, movesIn, movesOut, expected, actual, diff, cardAll, totalSales: cashSales + cardSales + (TRANSFER_IN_CASH ? 0 : trSales) + (CREDIT_IN_CASH ? 0 : credCharge), led };
 }
 function accBalance(id, upto) { return sum(ledgerList().filter(e => e.accountId === id && (!upto || e.date < upto)), e => e.type === 'charge' ? e.amount : -e.amount) }
 function totalReceivable() { return sum(Object.keys(S.accounts), id => accBalance(id)) }
@@ -292,6 +297,11 @@ function renderToday() {
         ${ai('cardTerminal', day.cardTerminal, '단말기 금액')}
         <span id="d-cardchk"></span>
       </div>
+      <div class="cardchk">
+        <span class="lbl">조제 현금 결제 건수</span>
+        <input class="cnt" style="width:90px" data-f="sales.rxCashCount" value="${s.rxCashCount != null ? esc(s.rxCashCount) : ''}" placeholder="0" inputmode="numeric" ${dis}>
+        <span class="lbl">건 · 10원 단위 절사 감안 (건당 최대 ${RX_TRUNC_PER}원) <span id="d-trunc"></span></span>
+      </div>
     </section>
 
     <section class="card">
@@ -387,6 +397,7 @@ function summaryHTML(c) {
   let v;
   if (c.actual == null) v = `<div class="verdict none"><div class="t">금고 현금을 세면 결과가 표시됩니다</div><div class="big">–</div></div>`;
   else if (c.diff === 0) v = `<div class="verdict ok"><div class="t">금고 현금이 정확히 맞습니다</div><div class="big">일치 ✓</div></div>`;
+  else if (c.inTrunc) v = `<div class="verdict ok"><div class="t">조제 현금 10원 단위 절사 범위 안입니다</div><div class="big">일치 ✓</div><div class="t" style="font-weight:500">절사 차이 ${won(c.diff)} (허용 최대 -${won(c.truncMax)})</div></div>`;
   else if (c.diff < 0) v = `<div class="verdict short"><div class="t">현금이 부족합니다</div><div class="big">${won(c.diff)}</div></div>`;
   else v = `<div class="verdict over"><div class="t">현금이 남습니다</div><div class="big">+${won(c.diff)}</div></div>`;
   return `<div class="sum">
@@ -399,6 +410,7 @@ function summaryHTML(c) {
     <div class="ln"><span>＋ 기타 현금 입금</span><span class="num">${won(c.movesIn)}</span></div>
     <div class="ln minus"><span>－ 현금 출금·지출</span><span class="num">${c.movesOut ? '-' + won(c.movesOut) : won(0)}</span></div>
     <div class="tot"><span>있어야 할 현금</span><span class="big num">${won(c.expected)}</span></div>
+    ${c.truncMax ? `<div class="ln" style="font-size:13px"><span>　조제 현금 절사 허용 (${c.rxCnt}건)</span><span class="num">최대 -${won(c.truncMax)}</span></div>` : ''}
     <div class="ln" style="padding-top:8px"><span>실제 센 현금</span><span class="num"><b>${won(c.actual)}</b></span></div>
     ${v}
     <div class="foot">
@@ -428,6 +440,7 @@ function updateDerived() {
   const cnt = c.day.count || {};
   DENOMS.forEach(k => set('d-c' + k, cnt[k] ? won(k * (Number(cnt[k]) || 0)) : ''));
   set('d-ctot', won(c.actual));
+  set('d-trunc', c.truncMax ? `→ 최대 ${won(c.truncMax)}까지 부족해도 일치로 봅니다` : '');
   set('d-sum', summaryHTML(c));
 }
 function editDay(mut, { now = false, full = false } = {}) {
@@ -576,7 +589,7 @@ function monthRows(ym) { return monthDates(ym).map(d => ({ d, c: calc(d) })) }
 function renderHistory() {
   const ym = S.month, rows = monthRows(ym);
   const T = k => sum(rows, r => r.c[k]);
-  const diffs = rows.filter(r => r.c.diff != null);
+  const diffs = rows.filter(r => r.c.diff != null && !r.c.inTrunc); // 절사 범위 안의 차이는 과부족에서 제외
   const unclosed = rows.filter(r => !(S.days[r.d] && S.days[r.d].closed) && r.d <= todayStr()).length;
   return `
   <div class="daybar">
@@ -599,7 +612,7 @@ function renderHistory() {
       <tbody>${rows.length ? rows.map(({ d, c }) => `<tr data-act="goto" data-d="${d}">
         <td>${shortDate(d)}</td><td>${fmt(c.opening)}</td><td>${fmt(c.cashSales)}</td><td>${fmt(c.cardSales)}</td><td>${fmt(c.trSales)}</td>
         <td>${fmt(c.credCharge)}</td><td>${fmt(c.credCash)}</td><td>${fmt(c.movesIn - c.movesOut)}</td><td>${fmt(c.expected)}</td>
-        <td>${c.actual == null ? '–' : fmt(c.actual)}</td><td class="${cls(c.diff)}">${c.diff == null ? '–' : c.diff === 0 ? '일치' : sgn(c.diff)}</td>
+        <td>${c.actual == null ? '–' : fmt(c.actual)}</td><td class="${c.inTrunc ? 'zero' : cls(c.diff)}">${c.diff == null ? '–' : c.diff === 0 ? '일치' : c.inTrunc ? `일치(절사 ${fmt(c.diff)})` : sgn(c.diff)}</td>
         <td>${S.days[d] && S.days[d].closed ? '<span class="badge ok">마감</span>' : '<span class="badge">미마감</span>'}</td></tr>`).join('')
         : '<tr><td colspan="12" class="empty" style="text-align:left">이 달의 기록이 없습니다.</td></tr>'}</tbody>
       ${rows.length ? `<tfoot><tr><td>합계</td><td></td><td>${fmt(T('cashSales'))}</td><td>${fmt(T('cardSales'))}</td><td>${fmt(T('trSales'))}</td><td>${fmt(T('credCharge'))}</td><td>${fmt(T('credCash'))}</td><td>${fmt(T('movesIn') - T('movesOut'))}</td><td></td><td></td><td class="${cls(sum(diffs, r => r.c.diff))}">${diffs.length ? sgn(sum(diffs, r => r.c.diff)) : ''}</td><td></td></tr></tfoot>` : ''}
@@ -755,7 +768,7 @@ document.addEventListener('click', e => {
       const c = calc(S.date);
       const go = () => { editDay(d => { d.closed = true; d.closedAt = new Date().toISOString(); if (d.opening == null) d.opening = c.opening }, { now: true, full: true }); toast('오늘 정산을 마감했습니다') };
       if (c.actual == null) confirmBox('금고 현금을 아직 세지 않았습니다. 그래도 마감할까요?', '마감', go);
-      else if (c.diff !== 0) confirmBox(`과부족 ${sgn(c.diff)}이 있습니다. 메모에 사유를 적었나요? 이대로 마감할까요?`, '마감', go);
+      else if (c.diff !== 0 && !c.inTrunc) confirmBox(`과부족 ${sgn(c.diff)}이 있습니다. 메모에 사유를 적었나요? 이대로 마감할까요?`, '마감', go);
       else go(); break
     }
     case 'reopen': editDay(d => { d.closed = false }, { now: true, full: true }); break;
@@ -815,6 +828,8 @@ function interpret(r) {
     return { cash: cashAmt, card, how, total };
   };
   const rx = part('조제', num(r.rx_total), num(r.rx_card), num(r.rx_cash), num(r.rx_cash_receipt), 0);
+  const cntParts = [num(r.rx_cash_count), num(r.rx_cash_receipt_count)].filter(x => x != null);
+  const rxCount = cntParts.length ? cntParts.reduce((a, b) => a + b, 0) : null;
   const otcCredit = num(r.otc_credit) || 0;
   const otc = part('일반약', num(r.otc_total), num(r.otc_card), num(r.otc_cash), num(r.otc_cash_receipt), otcCredit);
   if (otcCredit > 0) warns.push(`일반약 외상 ${won(otcCredit)}이 있습니다. 이 금액은 현금·카드에 넣지 않았으니 ③ 외상·요양원에 거래처별로 '외상 발생'으로 기록하세요.`);
@@ -823,7 +838,7 @@ function interpret(r) {
   let date = null;
   if (okDate(r.dateFrom) && okDate(r.dateTo)) { if (r.dateFrom === r.dateTo) date = r.dateTo; else warns.push(`조회기간이 ${r.dateFrom} ~ ${r.dateTo}로 하루가 아닙니다. 하루치 화면인지 확인하세요.`) }
   else if (okDate(r.dateTo)) date = r.dateTo;
-  return { rx, otc, date, warns };
+  return { rx, otc, date, warns, rxCount };
 }
 async function imageToBase64(file) {
   const url = URL.createObjectURL(file);
@@ -873,6 +888,7 @@ function showAiResult(res) {
       <tbody>
         <tr><td style="white-space:nowrap">조제 본인부담</td><td>${inp('ai-rxCash', res.rx.cash)}</td><td>${inp('ai-rxCard', res.rx.card)}</td></tr>
         <tr><td style="white-space:nowrap">일반약·건기식</td><td>${inp('ai-otcCash', res.otc.cash)}</td><td>${inp('ai-otcCard', res.otc.card)}</td></tr>
+        <tr><td style="white-space:nowrap">조제 현금 건수</td><td><input class="amt txt" id="ai-rxCnt" value="${res.rxCount ?? ''}" inputmode="numeric" style="text-align:right"></td><td class="lbl" style="font-size:12px">절사 감안용</td></tr>
       </tbody>
     </table>
     <div class="lbl" style="font-size:12.5px">${res.rx.how ? `조제 현금 = ${esc(res.rx.how)}<br>` : ''}${res.otc.how ? `일반약 현금 = ${esc(res.otc.how)}` : ''}</div>
@@ -884,7 +900,7 @@ function showAiResult(res) {
       const d = k === 'apply' ? target : S.date;
       if (S.days[d] && S.days[d].closed) { toast(`${shortDate(d)}은 마감된 날입니다. 마감 해제 후 입력하세요`); return }
       const g = id => parseAmt(m.querySelector('#' + id).value);
-      const vals = { rxCash: g('ai-rxCash'), rxCard: g('ai-rxCard'), otcCash: g('ai-otcCash'), otcCard: g('ai-otcCard') };
+      const vals = { rxCash: g('ai-rxCash'), rxCard: g('ai-rxCard'), otcCash: g('ai-otcCash'), otcCard: g('ai-otcCard'), rxCashCount: g('ai-rxCnt') };
       closeModal(); flushAll();
       S.date = d; if (location.hash !== '#today') location.hash = '#today';
       editDay(day => { day.sales = day.sales || {}; Object.assign(day.sales, vals) }, { now: true, full: true });
