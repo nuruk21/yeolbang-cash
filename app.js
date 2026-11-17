@@ -4,6 +4,9 @@ import { OWNER_EMAIL, IDLE_LOGOUT_MINUTES } from "./firebase-config.js";
 import * as CFG from "./firebase-config.js";
 // 약국 프로그램(PMIT3000)에서 외상 판매가 '현금결제'로 집계되는 경우 true → 외상 발생액을 금고 계산에서 뺌
 const CREDIT_IN_CASH = CFG.CREDIT_INCLUDED_IN_CASH !== false;
+// 계좌이체로 받은 돈도 PMIT3000에서 '현금결제'로 집계되는 경우 true → 이체 금액을 금고 계산에서 뺌
+const TRANSFER_IN_CASH = CFG.TRANSFER_INCLUDED_IN_CASH !== false;
+const TR_CATS = ['조제', '일반약'];
 
 /* ---------- 상수 ---------- */
 const DENOMS = [50000, 10000, 5000, 1000, 500, 100, 50, 10];
@@ -67,7 +70,12 @@ function calc(date) {
   const prev = prevClosing(date);
   const openingAuto = day.opening == null;
   const opening = openingAuto ? (prev ? prev.actual : 0) : Number(day.opening);
-  const cashSales = v('rxCash') + v('otcCash'), cardSales = v('rxCard') + v('otcCard'), trSales = v('rxTransfer') + v('otcTransfer');
+  const mvAll = day.moves || [];
+  const trList = mvAll.filter(m => m.dir === 'tr');
+  const rxTr = v('rxTransfer') + sum(trList.filter(m => m.cat !== '일반약'), m => m.amount);
+  const otcTr = v('otcTransfer') + sum(trList.filter(m => m.cat === '일반약'), m => m.amount);
+  const cashSales = v('rxCash') + v('otcCash'), cardSales = v('rxCard') + v('otcCard'), trSales = rxTr + otcTr;
+  const trOut = TRANSFER_IN_CASH ? trSales : 0; // 현금결제에 섞여 있는 계좌이체 (금고에 없는 돈)
   const led = ledgerOn(date);
   const credCharge = sum(led.filter(e => e.type === 'charge'), e => e.amount);
   const pay = m => sum(led.filter(e => e.type === 'payment' && e.method === m), e => e.amount);
@@ -75,11 +83,11 @@ function calc(date) {
   const mv = day.moves || [];
   const movesIn = sum(mv.filter(m => m.dir === 'in'), m => m.amount), movesOut = sum(mv.filter(m => m.dir === 'out'), m => m.amount);
   const creditOut = CREDIT_IN_CASH ? credCharge : 0; // 현금 매출에 섞여 있는 외상 (실제로 안 들어온 돈)
-  const expected = opening + cashSales - creditOut + credCash + movesIn - movesOut;
+  const expected = opening + cashSales - creditOut - trOut + credCash + movesIn - movesOut;
   const actual = countTotal(day);
   const diff = actual == null ? null : actual - expected;
   const cardAll = cardSales + credCard;
-  return { creditOut, day, prev, opening, openingAuto, cashSales, cardSales, trSales, credCharge, credCash, credCard, credTr, movesIn, movesOut, expected, actual, diff, cardAll, totalSales: cashSales + cardSales + trSales + (CREDIT_IN_CASH ? 0 : credCharge), led };
+  return { creditOut, trOut, rxTr, otcTr, trList, day, prev, opening, openingAuto, cashSales, cardSales, trSales, credCharge, credCash, credCard, credTr, movesIn, movesOut, expected, actual, diff, cardAll, totalSales: cashSales + cardSales + (TRANSFER_IN_CASH ? 0 : trSales) + (CREDIT_IN_CASH ? 0 : credCharge), led };
 }
 function accBalance(id, upto) { return sum(ledgerList().filter(e => e.accountId === id && (!upto || e.date < upto)), e => e.type === 'charge' ? e.amount : -e.amount) }
 function totalReceivable() { return sum(Object.keys(S.accounts), id => accBalance(id)) }
@@ -272,10 +280,10 @@ function renderToday() {
       ${!lock && fb.aiReady() ? `<div class="photobar"><button class="btn pri" data-act="photo">📷 마감 화면 사진으로 자동 입력</button><span class="lbl">사진을 고르거나, 마감 화면을 캡처한 뒤 이 페이지에서 <b>Ctrl+V</b></span><input type="file" id="photoFile" accept="image/*" hidden></div>` : ''}
       <p class="hint">약국 프로그램·카드단말기의 일 마감 금액을 옮겨 적으세요. <b>12000+3500</b>처럼 더하기로 입력해도 됩니다. ${CREDIT_IN_CASH ? 'PMIT 통계의 현금·카드 금액을 그대로 넣으세요. 외상 판매가 현금에 섞여 있어도 ③에 <b>외상 발생</b>으로 기록하면 금고 계산에서 자동으로 빠집니다. 외상·요양원에서 나중에 받은 돈은 여기 넣지 말고 ③에 <b>수금</b>으로 기록하세요.' : '외상으로 처리한 금액과 외상·요양원 수금액은 여기에 넣지 말고 ③에 기록하세요.'}</p>
       <div class="salewrap"><table class="sales">
-        <thead><tr><th></th><th>현금</th><th>카드</th><th>계좌이체</th><th>합계</th></tr></thead>
+        <thead><tr><th></th><th>현금</th><th>카드</th><th>${TRANSFER_IN_CASH ? '계좌이체<br><span style="font-size:11px">(현금 중, ④에서 입력)</span>' : '계좌이체<br><span style="font-size:11px">(④에서 입력)</span>'}</th><th>합계</th></tr></thead>
         <tbody>
-          <tr><td>조제 본인부담</td><td>${ai('sales.rxCash', s.rxCash)}</td><td>${ai('sales.rxCard', s.rxCard)}</td><td>${ai('sales.rxTransfer', s.rxTransfer)}</td><td class="n" id="d-rx"></td></tr>
-          <tr><td>일반약·건기식</td><td>${ai('sales.otcCash', s.otcCash)}</td><td>${ai('sales.otcCard', s.otcCard)}</td><td>${ai('sales.otcTransfer', s.otcTransfer)}</td><td class="n" id="d-otc"></td></tr>
+          <tr><td>조제 본인부담</td><td>${ai('sales.rxCash', s.rxCash)}</td><td>${ai('sales.rxCard', s.rxCard)}</td><td class="n muted" id="d-rxtr"></td><td class="n" id="d-rx"></td></tr>
+          <tr><td>일반약·건기식</td><td>${ai('sales.otcCash', s.otcCash)}</td><td>${ai('sales.otcCard', s.otcCard)}</td><td class="n muted" id="d-otctr"></td><td class="n" id="d-otc"></td></tr>
         </tbody>
         <tfoot><tr><td>합계</td><td class="n" id="d-cash"></td><td class="n" id="d-card"></td><td class="n" id="d-tr"></td><td class="n" id="d-all"></td></tr></tfoot>
       </table></div>
@@ -318,10 +326,29 @@ function renderToday() {
     </section>
 
     <section class="card">
-      <h2><span class="step">4</span>현금 입출금 (매출 외)</h2>
+      <h2><span class="step">4</span>계좌이체로 받은 돈</h2>
+      <p class="hint">손님이 약국 통장으로 보낸 돈을 한 건씩 적으세요. ${TRANSFER_IN_CASH ? 'PMIT에서는 <b>현금결제</b>로 찍혀 ② 현금에 들어가 있지만 금고에는 없는 돈이라, 여기 적은 금액만큼 금고 계산에서 빠집니다.' : '금고 계산에는 영향을 주지 않고 매출에만 더해집니다.'} 외상·요양원 대금을 이체로 받은 경우는 여기 말고 ③에 <b>수금 · 계좌이체</b>로 적으세요.</p>
+      <div class="list">
+        ${c.trList.length ? c.trList.map(m => `
+          <div class="li mv">
+            <span class="tag-in" style="color:var(--blue)">이체</span>
+            <select data-mv="${esc(m.id)}" data-mf="cat" ${dis}>${TR_CATS.map(x => `<option ${m.cat === x ? 'selected' : ''}>${x}</option>`).join('')}</select>
+            <input class="amt" data-mv="${esc(m.id)}" data-mf="amount" value="${fmt(m.amount)}" placeholder="0" inputmode="tel" ${dis}>
+            <input class="txt memo" data-mv="${esc(m.id)}" data-mf="memo" value="${esc(m.memo)}" placeholder="입금자 이름·메모" ${dis}>
+            ${lock ? '<span></span>' : `<button class="x" data-act="mv-del" data-id="${esc(m.id)}" title="삭제">×</button>`}
+          </div>`).join('') : '<div class="empty">오늘 계좌이체로 받은 돈이 없습니다.</div>'}
+      </div>
+      <div class="row" style="margin-top:12px;justify-content:space-between">
+        ${lock ? '<span></span>' : `<button class="btn" data-act="mv-add" data-dir="tr">＋ 계좌이체 추가</button>`}
+        <span class="lbl">이체 합계 <b class="num" id="d-trsum" style="color:var(--ink)"></b> · 통장 입금 내역과 맞춰 보세요</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><span class="step">5</span>현금 입출금 (매출 외)</h2>
       <p class="hint">금고에서 나간 돈(은행 입금, 환불, 소모품 구입 등)과 매출이 아닌 이유로 들어온 돈(거스름돈 보충 등)을 적으세요.</p>
       <div class="list">
-        ${(day.moves || []).length ? (day.moves || []).map(m => `
+        ${(day.moves || []).filter(m => m.dir !== 'tr').length ? (day.moves || []).filter(m => m.dir !== 'tr').map(m => `
           <div class="li mv">
             <span class="${m.dir === 'in' ? 'tag-in' : 'tag-out'}">${m.dir === 'in' ? '＋ 입금' : '－ 출금'}</span>
             <select data-mv="${esc(m.id)}" data-mf="cat" ${dis}>${(m.dir === 'in' ? IN_CATS : OUT_CATS).map(x => `<option ${m.cat === x ? 'selected' : ''}>${x}</option>`).join('')}</select>
@@ -337,7 +364,7 @@ function renderToday() {
     </section>
 
     <section class="card">
-      <h2><span class="step">5</span>퇴근 전 금고 현금 세기</h2>
+      <h2><span class="step">6</span>퇴근 전 금고 현금 세기</h2>
       <p class="hint">권종별 개수(장·개)를 입력하면 합계가 자동으로 계산됩니다.</p>
       <div class="denoms">
         ${DENOMS.map(k => `<div class="dn ${k < 1000 ? 'coin' : ''}"><span class="face">${k.toLocaleString('ko-KR')}원</span>
@@ -367,6 +394,7 @@ function summaryHTML(c) {
     <div class="ln"><span>아침 시재</span><span class="num">${won(c.opening)}</span></div>
     <div class="ln"><span>＋ 현금 매출</span><span class="num">${won(c.cashSales)}</span></div>
     ${c.creditOut ? `<div class="ln minus"><span>－ 외상 발생 (현금 매출에 포함됨)</span><span class="num">-${won(c.creditOut)}</span></div>` : ''}
+    ${c.trOut ? `<div class="ln minus"><span>－ 계좌이체 (현금 매출에 포함됨)</span><span class="num">-${won(c.trOut)}</span></div>` : ''}
     <div class="ln"><span>＋ 외상 현금 수금</span><span class="num">${won(c.credCash)}</span></div>
     <div class="ln"><span>＋ 기타 현금 입금</span><span class="num">${won(c.movesIn)}</span></div>
     <div class="ln minus"><span>－ 현금 출금·지출</span><span class="num">${c.movesOut ? '-' + won(c.movesOut) : won(0)}</span></div>
@@ -375,7 +403,8 @@ function summaryHTML(c) {
     ${v}
     <div class="foot">
       <div><span>오늘 총매출</span><b class="num">${won(c.totalSales)}</b></div>
-      <div><span>　현금 / 카드 / 이체</span><span class="num">${fmt(c.cashSales)} / ${fmt(c.cardSales)} / ${fmt(c.trSales)}</span></div>
+      ${TRANSFER_IN_CASH ? `<div><span>　현금 / 카드</span><span class="num">${fmt(c.cashSales)} / ${fmt(c.cardSales)}</span></div>
+      <div><span>　(현금 중 계좌이체)</span><span class="num">${won(c.trSales)}</span></div>` : `<div><span>　현금 / 카드 / 이체</span><span class="num">${fmt(c.cashSales)} / ${fmt(c.cardSales)} / ${fmt(c.trSales)}</span></div>`}
       <div><span>　외상 발생</span><span class="num">${won(c.credCharge)}</span></div>
       <div><span>외상 수금 (카드·이체)</span><span class="num">${won(c.credCard + c.credTr)}</span></div>
       <div style="margin-top:6px"><span>전체 외상 미수 잔액</span><b class="num">${won(totalReceivable())}</b></div>
@@ -388,10 +417,11 @@ function summaryHTML(c) {
 function updateDerived() {
   if (S.view !== 'today') return;
   const c = calc(S.date), s = c.day.sales || {}, v = k => Number(s[k]) || 0, set = (id, h) => { const e = document.getElementById(id); if (e) e.innerHTML = h };
-  set('d-rx', won(v('rxCash') + v('rxCard') + v('rxTransfer')));
-  set('d-otc', won(v('otcCash') + v('otcCard') + v('otcTransfer')));
+  set('d-rx', won(v('rxCash') + v('rxCard') + (TRANSFER_IN_CASH ? 0 : c.rxTr)));
+  set('d-otc', won(v('otcCash') + v('otcCard') + (TRANSFER_IN_CASH ? 0 : c.otcTr)));
+  set('d-rxtr', c.rxTr ? won(c.rxTr) : '–'); set('d-otctr', c.otcTr ? won(c.otcTr) : '–'); set('d-trsum', won(c.trSales));
   set('d-cash', won(c.cashSales)); set('d-card', won(c.cardSales)); set('d-tr', won(c.trSales));
-  set('d-all', won(c.cashSales + c.cardSales + c.trSales));
+  set('d-all', won(c.cashSales + c.cardSales + (TRANSFER_IN_CASH ? 0 : c.trSales)));
   const ct = c.day.cardTerminal;
   if (ct == null) set('d-cardchk', `<span class="lbl">카드 매출+카드 수금 = ${won(c.cardAll)}</span>`);
   else { const df = ct - c.cardAll; set('d-cardchk', df === 0 ? `<span class="badge ok">카드 일치 ✓</span>` : `<span class="badge bad">카드 차이 ${sgn(df)}</span> <span class="lbl">(입력 합계 ${won(c.cardAll)})</span>`) }
@@ -565,7 +595,7 @@ function renderHistory() {
   </div>
   <div class="card hist">
     <table>
-      <thead><tr><th>날짜</th><th>아침 시재</th><th>현금 매출</th><th>카드 매출</th><th>이체 매출</th><th>외상 발생</th><th>외상 현금수금</th><th>기타 입출금</th><th>있어야 할 현금</th><th>실제 현금</th><th>과부족</th><th>상태</th></tr></thead>
+      <thead><tr><th>날짜</th><th>아침 시재</th><th>현금 매출</th><th>카드 매출</th><th>${TRANSFER_IN_CASH ? '계좌이체(현금 중)' : '이체 매출'}</th><th>외상 발생</th><th>외상 현금수금</th><th>기타 입출금</th><th>있어야 할 현금</th><th>실제 현금</th><th>과부족</th><th>상태</th></tr></thead>
       <tbody>${rows.length ? rows.map(({ d, c }) => `<tr data-act="goto" data-d="${d}">
         <td>${shortDate(d)}</td><td>${fmt(c.opening)}</td><td>${fmt(c.cashSales)}</td><td>${fmt(c.cardSales)}</td><td>${fmt(c.trSales)}</td>
         <td>${fmt(c.credCharge)}</td><td>${fmt(c.credCash)}</td><td>${fmt(c.movesIn - c.movesOut)}</td><td>${fmt(c.expected)}</td>
@@ -578,7 +608,7 @@ function renderHistory() {
   </div>`;
 }
 function monthTable(ym) {
-  const h = ['날짜', '아침시재', '현금매출', '카드매출', '이체매출', '외상발생', '외상현금수금', '외상카드·이체수금', '기타입금', '현금출금·지출', '있어야할현금', '실제현금', '과부족', '마감', '메모'];
+  const h = ['날짜', '아침시재', '현금매출', '카드매출', (TRANSFER_IN_CASH ? '계좌이체(현금중)' : '이체매출'), '외상발생', '외상현금수금', '외상카드·이체수금', '기타입금', '현금출금·지출', '있어야할현금', '실제현금', '과부족', '마감', '메모'];
   return [h, ...monthRows(ym).map(({ d, c }) => [d, c.opening, c.cashSales, c.cardSales, c.trSales, c.credCharge, c.credCash, c.credCard + c.credTr, c.movesIn, c.movesOut, c.expected, c.actual ?? '', c.diff ?? '', S.days[d] && S.days[d].closed ? '마감' : '', (S.days[d] && S.days[d].memo) || ''])];
 }
 
@@ -717,7 +747,7 @@ document.addEventListener('click', e => {
       confirmBox(`${an ? an.name : ''} ${won(e2.amount)} 기록을 삭제할까요?`, '삭제', () => { setDoc('ledger', b.dataset.id, null); render() }); break
     }
     case 'mv-add': {
-      const dir = b.dataset.dir; editDay(d => { d.moves = d.moves || []; d.moves.push({ id: genId(), dir, cat: dir === 'in' ? IN_CATS[0] : OUT_CATS[0], amount: 0, memo: '' }) }, { now: true, full: true });
+      const dir = b.dataset.dir; editDay(d => { d.moves = d.moves || []; d.moves.push({ id: genId(), dir, cat: dir === 'tr' ? '조제' : dir === 'in' ? IN_CATS[0] : OUT_CATS[0], amount: 0, memo: '' }) }, { now: true, full: true });
       const ins = view.querySelectorAll('.mv input.amt'); if (ins.length) ins[ins.length - 1].focus(); break
     }
     case 'mv-del': editDay(d => { d.moves = (d.moves || []).filter(m => m.id !== b.dataset.id) }, { now: true, full: true }); break;
