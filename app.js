@@ -216,7 +216,13 @@ function renderBanner() {
 }
 function route() {
   const h = (location.hash || '').slice(1);
-  S.view = ['today', 'accounts', 'history', 'settings'].includes(h) ? h : 'today';
+  S.view = h === 'accounts' ? 'credit' : ['today', 'credit', 'facility', 'history', 'settings'].includes(h) ? h : 'today';
+  if (S.view !== S.lastView) {
+    // 고객 외상장은 전체 기간(누적 잔액), 요양원은 월별 명세가 기본
+    if (S.view === 'credit') S.accAll = true; else if (S.view === 'facility') S.accAll = false;
+    if (S.view === 'credit' || S.view === 'facility') { S.accQ = ''; S.af.type = 'charge'; S.af.amount = ''; S.af.memo = '' }
+    S.lastView = S.view;
+  }
   document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', a.dataset.v === S.view));
 }
 window.addEventListener('hashchange', () => { closeModal(); if (S.phase === 'app') render() });
@@ -228,7 +234,7 @@ function render() {
   route();
   const v = document.getElementById('view');
   if (!S.loaded) { v.innerHTML = '<div class="loading">장부를 불러오는 중…</div>'; return }
-  v.innerHTML = S.view === 'accounts' ? renderAccounts() : S.view === 'history' ? renderHistory() : S.view === 'settings' ? renderSettings() : renderToday();
+  v.innerHTML = (S.view === 'credit' || S.view === 'facility') ? renderAccounts() : S.view === 'history' ? renderHistory() : S.view === 'settings' ? renderSettings() : renderToday();
   updateDerived();
   syncStatus();
 }
@@ -401,23 +407,60 @@ function editDay(mut, { now = false, full = false } = {}) {
   full ? render() : updateDerived();
 }
 
-/* ---------- 외상·요양원 ---------- */
+/* ---------- 고객 외상장 · 요양원 ---------- */
+const KIND_VIEW = { credit: 'personal', facility: 'facility' };
+// 미수 경과일: 수금을 오래된 외상부터 갚은 것으로 보고, 아직 남은 가장 오래된 외상 날짜를 찾음
+function oldestUnpaid(id) {
+  const ents = ledgerList().filter(e => e.accountId === id).sort((a, b) => a.date.localeCompare(b.date) || (a.createdAt || 0) - (b.createdAt || 0));
+  const q = []; let credit = 0;
+  for (const e of ents) {
+    if (e.type === 'charge') q.push({ date: e.date, left: e.amount });
+    else credit += e.amount;
+  }
+  for (const c of q) { const use = Math.min(credit, c.left); c.left -= use; credit -= use; if (c.left > 0) return c.date }
+  return null;
+}
+function daysSince(d) { const [y, m, dd] = d.split('-').map(Number); const t = new Date(); t.setHours(0, 0, 0, 0); return Math.round((t - new Date(y, m - 1, dd)) / 86400000) }
+function lastDate(id) { const ds = ledgerList().filter(e => e.accountId === id).map(e => e.date).sort(); return ds.length ? ds[ds.length - 1] : null }
+function accSummary(kind) {
+  return Object.entries(S.accounts).filter(([, a]) => a.kind === kind).map(([id, a]) => {
+    const bal = accBalance(id), od = bal > 0 ? oldestUnpaid(id) : null;
+    return { id, ...a, bal, oldest: od, age: od ? daysSince(od) : null, last: lastDate(id) };
+  });
+}
+function ageBadge(age) { if (age == null) return ''; const c = age >= 60 ? 'bad' : age >= 30 ? 'warn' : ''; return `<span class="badge ${c}">${age}일 경과</span>` }
+function accListItems(kind) {
+  const q = (S.accQ || '').trim().toLowerCase();
+  const all = accSummary(kind).filter(a => !q || a.name.toLowerCase().includes(q) || (a.phone || '').replace(/\D/g, '').includes(q.replace(/\D/g, '') || '\u0000'))
+    .sort((a, b) => (b.bal > 0) - (a.bal > 0) || (b.age ?? -1) - (a.age ?? -1) || a.name.localeCompare(b.name, 'ko'));
+  if (!all.length) return `<div class="empty">${q ? '검색 결과가 없습니다.' : kind === 'personal' ? '등록된 외상 고객이 없습니다. “+ 새 고객”으로 등록하세요.' : '등록된 요양원·기관이 없습니다. “+ 새 요양원”으로 등록하세요.'}</div>`;
+  return all.map(a => `<div class="item ${S.selAcc === a.id ? 'on' : ''}" data-act="acc-sel" data-id="${esc(a.id)}">
+    <div><div class="nm">${esc(a.name)}</div><div class="kd">${a.phone ? esc(a.phone) + ' · ' : ''}${a.last ? '최근 ' + shortDate(a.last) : '거래 없음'}</div></div>
+    <div style="text-align:right"><div class="bal num ${a.bal ? '' : 'zero'}">${a.bal ? won(a.bal) : '완납'}</div>${ageBadge(a.age)}</div></div>`).join('');
+}
 function renderAccounts() {
-  const all = Object.entries(S.accounts).map(([id, a]) => ({ id, ...a, bal: accBalance(id) }))
-    .filter(a => S.accFilter === 'all' || a.kind === S.accFilter)
-    .sort((a, b) => (b.bal > 0) - (a.bal > 0) || a.name.localeCompare(b.name, 'ko'));
-  if (S.selAcc && !S.accounts[S.selAcc]) S.selAcc = null;
-  if (!S.selAcc && all.length && window.innerWidth > 860) S.selAcc = all[0].id;
-  return `<div class="acc">
+  const kind = KIND_VIEW[S.view] || 'personal';
+  const list = accSummary(kind);
+  if (S.selAcc && (!S.accounts[S.selAcc] || S.accounts[S.selAcc].kind !== kind)) S.selAcc = null;
+  if (!S.selAcc && list.length && window.innerWidth > 860) {
+    const first = list.slice().sort((a, b) => (b.bal > 0) - (a.bal > 0) || (b.age ?? -1) - (a.age ?? -1) || a.name.localeCompare(b.name, 'ko'))[0];
+    S.selAcc = first.id;
+  }
+  const owing = list.filter(a => a.bal > 0), total = sum(owing, a => a.bal), old30 = owing.filter(a => a.age >= 30);
+  const isP = kind === 'personal';
+  return `
+  <div class="kpis">
+    <div class="kpi"><div class="k">${isP ? '외상 미수 총액' : '요양원 미수 총액'}</div><div class="v num">${won(total)}</div></div>
+    <div class="kpi"><div class="k">${isP ? '미수 고객' : '미수 기관'}</div><div class="v">${owing.length}곳 <span class="lbl" style="font-size:13px">/ 전체 ${list.length}</span></div></div>
+    <div class="kpi"><div class="k">30일 넘은 미수</div><div class="v num ${old30.length ? 'neg' : ''}">${old30.length}곳 · ${won(sum(old30, a => a.bal))}</div></div>
+  </div>
+  <div class="acc">
     <div class="card acclist">
-      <div class="row" style="justify-content:space-between"><h2 class="mt0">거래처</h2><button class="btn sm pri" data-act="acc-new">+ 새 거래처</button></div>
-      <div class="chips">${[['all', '전체'], ['personal', '개인 외상'], ['facility', '요양원·기관']].map(([k, v]) => `<button data-act="acc-filter" data-v="${k}" class="${S.accFilter === k ? 'on' : ''}">${v}</button>`).join('')}</div>
-      <div class="lbl" style="margin-bottom:6px">전체 미수 잔액 <b class="num" style="color:var(--ink)">${won(totalReceivable())}</b></div>
-      ${all.length ? all.map(a => `<div class="item ${S.selAcc === a.id ? 'on' : ''}" data-act="acc-sel" data-id="${esc(a.id)}">
-        <div><div class="nm">${esc(a.name)}</div><div class="kd">${KINDS[a.kind] || ''}${a.phone ? ' · ' + esc(a.phone) : ''}</div></div>
-        <div class="bal num ${a.bal ? '' : 'zero'}">${a.bal ? won(a.bal) : '0원'}</div></div>`).join('') : '<div class="empty">등록된 거래처가 없습니다. “+ 새 거래처”로 외상 고객이나 요양원을 등록하세요.</div>'}
+      <div class="row" style="justify-content:space-between"><h2 class="mt0">${isP ? '고객 외상장' : '요양원·기관'}</h2><button class="btn sm pri" data-act="acc-new">${isP ? '+ 새 고객' : '+ 새 요양원'}</button></div>
+      <input class="txt" id="accSearch" placeholder="이름·전화번호 검색" value="${esc(S.accQ || '')}" style="margin:10px 0 8px">
+      <div id="accItems">${accListItems(kind)}</div>
     </div>
-    <div>${S.selAcc ? renderAccDetail(S.selAcc) : '<div class="card empty">왼쪽에서 거래처를 선택하세요.</div>'}</div>
+    <div>${S.selAcc ? renderAccDetail(S.selAcc) : `<div class="card empty">왼쪽에서 ${isP ? '고객을' : '요양원을'} 선택하세요.</div>`}</div>
   </div>`;
 }
 function accPeriod() { if (S.accAll) return { from: null, to: null, label: '전체 기간' }; return { from: S.accMonth + '-01', to: addMonths(S.accMonth, 1) + '-01', label: korMonth(S.accMonth) } }
@@ -435,7 +478,8 @@ function renderAccDetail(id) {
     <div class="row" style="justify-content:space-between;align-items:flex-start">
       <div><h2 class="mt0" style="font-size:19px">${esc(a.name)} <span class="badge ${a.kind === 'facility' ? 'blue' : ''}">${KINDS[a.kind] || ''}</span></h2>
         <div class="lbl">${[a.phone, a.memo].filter(Boolean).map(esc).join(' · ') || '&nbsp;'}</div></div>
-      <div style="text-align:right"><div class="lbl">현재 미수 잔액</div><div class="num" style="font-size:24px;font-weight:700;color:${bal > 0 ? 'var(--red)' : 'var(--green-ink)'}">${won(bal)}</div></div>
+      <div style="text-align:right"><div class="lbl">현재 미수 잔액</div><div class="num" style="font-size:24px;font-weight:700;color:${bal > 0 ? 'var(--red)' : 'var(--green-ink)'}">${won(bal)}</div>
+        ${bal > 0 ? (() => { const od = oldestUnpaid(id); return `<div class="lbl" style="margin:2px 0 6px">가장 오래된 미수 ${od ? shortDate(od) + ' · ' + ageBadge(daysSince(od)) : ''}</div><button class="btn sm pri" data-act="pay-full" data-amt="${bal}">전액 수금 입력</button>` })() : ''}</div>
     </div>
     <div class="row" style="margin:14px 0 10px">
       <button class="btn icon" data-act="am-prev" ${S.accAll ? 'disabled' : ''}>◀</button>
@@ -445,7 +489,7 @@ function renderAccDetail(id) {
       <span class="fx"></span>
       <button class="btn sm" data-act="stmt-copy">명세 복사</button>
       <button class="btn sm" data-act="stmt-csv">엑셀(CSV) 저장</button>
-      <button class="btn sm" data-act="acc-edit">거래처 수정</button>
+      <button class="btn sm" data-act="acc-edit">${a.kind === 'personal' ? '고객 정보 수정' : '요양원 정보 수정'}</button>
     </div>
     <table class="stmt">
       <thead><tr><th>날짜</th><th>구분</th><th>내용</th><th class="n">외상·납품</th><th class="n">수금</th><th class="n">잔액</th><th></th></tr></thead>
@@ -574,7 +618,7 @@ function showModal(html, onSubmit) {
 function closeModal() { const m = document.getElementById('modal'); m.innerHTML = ''; m.onclick = null; if (S.needRender && !editing()) { S.needRender = false; render() } }
 function confirmBox(msg, ok, fn) { showModal(`<h3>${esc(msg)}</h3><div class="acts"><button class="btn" data-m="close">취소</button><button class="btn pri" data-m="ok">${esc(ok)}</button></div>`, k => { if (k === 'ok') { closeModal(); fn() } }) }
 function accountModal(id, after) {
-  const a = id ? S.accounts[id] : { name: '', kind: 'facility', phone: '', memo: '' };
+  const a = id ? S.accounts[id] : { name: '', kind: S.view === 'credit' ? 'personal' : 'facility', phone: '', memo: '' };
   const hasLed = id && ledgerList().some(e => e.accountId === id);
   showModal(`<h3>${id ? '거래처 수정' : '새 거래처 등록'}</h3>
     <div class="fld"><label>이름</label><input class="txt" id="m-name" maxlength="60" value="${esc(a.name)}" placeholder="예: ○○요양원, 홍길동"></div>
@@ -611,6 +655,7 @@ function addLedger(f, date) {
 const view = document.getElementById('view');
 view.addEventListener('input', e => {
   const t = e.target;
+  if (t.id === 'accSearch') { S.accQ = t.value; const box = document.getElementById('accItems'); if (box) box.innerHTML = accListItems(KIND_VIEW[S.view] || 'personal'); return }
   if (t.dataset.f) {
     const f = t.dataset.f;
     editDay(day => {
@@ -687,10 +732,15 @@ document.addEventListener('click', e => {
     case 'acc-new': accountModal(null, id => { S.selAcc = id }); break;
     case 'acc-edit': accountModal(S.selAcc); break;
     case 'acc-sel': S.selAcc = b.dataset.id; render(); break;
-    case 'acc-filter': S.accFilter = b.dataset.v; render(); break;
     case 'am-prev': S.accMonth = addMonths(S.accMonth, -1); render(); break;
     case 'am-next': S.accMonth = addMonths(S.accMonth, 1); render(); break;
     case 'af-type': S.af.type = b.dataset.v; render(); break;
+    case 'pay-full': {
+      S.af.type = 'payment'; S.af.amount = fmt(Number(b.dataset.amt)); S.af.date = todayStr(); S.af.memo = '전액 수금';
+      render();
+      const el = view.querySelector('[data-af="method"]'); if (el) { el.focus(); el.scrollIntoView({ block: 'center', behavior: 'smooth' }) }
+      toast('결제수단(현금·카드·이체)을 고른 뒤 추가를 누르세요'); break
+    }
     case 'af-add': if (addLedger({ ...S.af, acc: S.selAcc }, S.af.date || todayStr())) { S.af.amount = ''; S.af.memo = ''; render(); toast('기록했습니다') } break;
     case 'stmt-copy': copyText(stmtText(S.selAcc)); break;
     case 'stmt-csv': {
